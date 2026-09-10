@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Any
 from fastapi import FastAPI, Header, HTTPException
@@ -7,7 +8,6 @@ app = FastAPI(title="Remote Test MCP Server")
 
 EXPECTED_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "secret_token_abc")
 
-# In-memory mock database
 CRM_CONTACTS: dict[str, dict[str, Any]] = {
     "user_a1b2": {"id": "user_a1b2", "email": "test@example.com", "name": "Test User"},
 }
@@ -145,10 +145,14 @@ async def handle_mcp(
         if tool_name == "crm_contact_search":
             email = arguments.get("email")
             match = next((c for c in CRM_CONTACTS.values() if c.get("email") == email), None)
+            data = {"contact": match}
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": {"contact": match} if match else {"contact": None},
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(data)}],
+                    **data,
+                },
             }
 
         if tool_name == "crm_contact_upsert":
@@ -156,10 +160,14 @@ async def handle_mcp(
             name = arguments.get("name", "")
             cid = f"rem_{abs(hash(email)) % 10000}"
             CRM_CONTACTS[cid] = {"id": cid, "email": email, "name": name}
+            data = {"contact_id": cid, "status": "upserted"}
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": {"contact_id": cid, "status": "upserted"},
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(data)}],
+                    **data,
+                },
             }
 
         if tool_name == "crm_note_create":
@@ -171,10 +179,14 @@ async def handle_mcp(
                 "note": note_content,
             }
             CRM_NOTES.append(note_record)
+            data = {"note_id": note_record["note_id"], "status": "created"}
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": {"note_id": note_record["note_id"], "status": "created"},
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(data)}],
+                    **data,
+                },
             }
 
         if tool_name == "kb_search":
@@ -202,22 +214,30 @@ async def handle_mcp(
 
             first_match = matches[0] if matches else KB_DOCS[1]
 
+            payload = {
+                "documents": matches,
+                "doc_refs": [d["id"] for d in matches],
+                "doc_ref": first_match["id"],
+                "answer": first_match["content"],
+                "content": first_match["content"],
+                "title": first_match["title"],
+                "facts": {
+                    "documents": matches,
+                    "answer": first_match["content"],
+                    "content": first_match["content"],
+                    "title": first_match["title"],
+                },
+            }
+
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
                 "result": {
-                    "documents": matches,
-                    "doc_refs": [d["id"] for d in matches],
-                    "doc_ref": first_match["id"],
-                    "answer": first_match["content"],
-                    "content": first_match["content"],
-                    "title": first_match["title"],
-                    "facts": {
-                        "documents": matches,
-                        "answer": first_match["content"],
-                        "content": first_match["content"],
-                        "title": first_match["title"],
-                    },
+                    # 1. MCP Standard Compliant wrapper
+                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                    "isError": False,
+                    # 2. Raw fields for direct dictionary unpackers
+                    **payload,
                 },
             }
 
@@ -227,21 +247,26 @@ async def handle_mcp(
                 (d for d in KB_DOCS if d.get("id") == target_ref or d.get("doc_ref") == target_ref),
                 KB_DOCS[1],
             )
+            payload = {
+                "document": doc,
+                "documents": [doc],
+                "doc_ref": doc["id"],
+                "title": doc["title"],
+                "content": doc["content"],
+                "answer": doc["content"],
+                "facts": {
+                    "documents": [doc],
+                    "answer": doc["content"],
+                    "content": doc["content"],
+                },
+            }
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
                 "result": {
-                    "document": doc,
-                    "documents": [doc],
-                    "doc_ref": doc["id"],
-                    "title": doc["title"],
-                    "content": doc["content"],
-                    "answer": doc["content"],
-                    "facts": {
-                        "documents": [doc],
-                        "answer": doc["content"],
-                        "content": doc["content"],
-                    },
+                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                    "isError": False,
+                    **payload,
                 },
             }
 
