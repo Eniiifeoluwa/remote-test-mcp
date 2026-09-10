@@ -124,7 +124,7 @@ async def handle_mcp(
                     },
                     {
                         "name": "kb_document_get",
-                        "description": "Fetch complete knowledge base document content by doc_ref / id",
+                        "description": "Fetch complete knowledge base document content by doc_ref or id",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -178,19 +178,40 @@ async def handle_mcp(
             }
 
         if tool_name == "kb_search":
-            query = (arguments.get("query") or "").lower()
-            matches = [
-                d
-                for d in KB_DOCS
-                if query in d.get("title", "").lower() or query in d.get("content", "").lower()
+            raw_query = (arguments.get("query") or "").lower()
+            stop_words = {
+                "iron", "ink", "tattoo", "piercing", "studio",
+                "the", "a", "an", "is", "for", "and", "what", "are", "your", "do", "you", "have"
+            }
+            tokens = [
+                word.strip("?,!.:'\"")
+                for word in raw_query.split()
+                if word.strip("?,!.:'\"") and word.strip("?,!.:'\"") not in stop_words
             ]
-            # Return doc references so the saga step can pass them to kb.document.get
+
+            def score_doc(doc: dict[str, Any]) -> int:
+                title = doc.get("title", "").lower()
+                content = doc.get("content", "").lower()
+                if not tokens:
+                    return 1 if raw_query in title or raw_query in content else 0
+                return sum(1 for t in tokens if t in title or t in content)
+
+            scored = [(score_doc(d), d) for d in KB_DOCS]
+            matches = [d for score, d in scored if score > 0]
+            matches.sort(key=lambda x: score_doc(x), reverse=True)
+
+            first_match = matches[0] if matches else None
+
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
                 "result": {
                     "documents": matches,
                     "doc_refs": [d["id"] for d in matches],
+                    "doc_ref": first_match["id"] if first_match else None,
+                    "answer": first_match["content"] if first_match else "No relevant studio policy found.",
+                    "content": first_match["content"] if first_match else "",
+                    "title": first_match["title"] if first_match else "",
                 },
             }
 
@@ -200,10 +221,21 @@ async def handle_mcp(
                 (d for d in KB_DOCS if d.get("id") == target_ref or d.get("doc_ref") == target_ref),
                 None,
             )
+            if doc:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request.id,
+                    "result": {
+                        "document": doc,
+                        "content": doc["content"],
+                        "title": doc["title"],
+                        "doc_ref": doc["id"],
+                    },
+                }
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": doc or {"doc_ref": target_ref, "content": ""},
+                "result": {"doc_ref": target_ref, "content": ""},
             }
 
         return {
