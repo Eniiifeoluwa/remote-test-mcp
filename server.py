@@ -95,20 +95,24 @@ async def handle_mcp(
                             "properties": {
                                 "email": {"type": "string"},
                                 "name": {"type": "string"},
+                                "phone_e164": {"type": "string"},
                             },
                             "required": ["email", "name"],
                         },
                     },
                     {
                         "name": "crm_note_create",
-                        "description": "Add a note or inquiry to a CRM contact record",
+                        "description": "Add a note to a CRM contact record",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "attendee_ref": {"type": "string"},
-                                "note": {"type": "string"},
+                                # Canonical field names — this is what the action-agent
+                                # platform actually sends (see app/core/sagas.py:_crm_note_args
+                                # and app/core/planner.py's HeuristicPlanner chaining).
+                                "contact_ref": {"type": "string"},
+                                "body": {"type": "string"},
                             },
-                            "required": ["note"],
+                            "required": ["contact_ref", "body"],
                         },
                     },
                     {
@@ -145,7 +149,16 @@ async def handle_mcp(
         if tool_name == "crm_contact_search":
             email = arguments.get("email")
             match = next((c for c in CRM_CONTACTS.values() if c.get("email") == email), None)
-            data = {"contact": match}
+            # Expose contact_id at the TOP LEVEL of the result, not just nested in
+            # "contact". app/core/planner.py's HeuristicPlanner does:
+            #   if "contact_id" in outcome and "contact_ref" not in args:
+            #       args["contact_ref"] = outcome["contact_id"]
+            # so if this step's result has no top-level contact_id, that auto-chaining
+            # silently does nothing on the next call.
+            data = {
+                "contact": match,
+                "contact_id": match["id"] if match else None,
+            }
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
@@ -171,12 +184,15 @@ async def handle_mcp(
             }
 
         if tool_name == "crm_note_create":
-            attendee_ref = arguments.get("attendee_ref")
-            note_content = arguments.get("note", "")
+            # Accept the platform's canonical field names (contact_ref/body) as
+            # primary, but keep the old names as a fallback so this still works
+            # if you're calling it by hand for a quick test.
+            contact_ref = arguments.get("contact_ref") or arguments.get("attendee_ref")
+            note_content = arguments.get("body") or arguments.get("note", "")
             note_record = {
                 "note_id": f"note_{len(CRM_NOTES) + 1}",
-                "attendee_ref": attendee_ref,
-                "note": note_content,
+                "contact_ref": contact_ref,
+                "body": note_content,
             }
             CRM_NOTES.append(note_record)
             data = {"note_id": note_record["note_id"], "status": "created"}
@@ -214,15 +230,25 @@ async def handle_mcp(
 
             first_match = matches[0] if matches else KB_DOCS[1]
 
+            # app/core/sagas.py:_kb_doc_get_args does documents[0]["doc_id"]
+            # (a direct key access, not .get) whenever it chains kb.search ->
+            # kb.document.get. Without "doc_id" on every returned document,
+            # that chained call raises a KeyError. Add it alongside id/doc_ref.
+            def with_doc_id(doc: dict[str, Any]) -> dict[str, Any]:
+                return {**doc, "doc_id": doc["id"]}
+
+            matches_out = [with_doc_id(d) for d in matches]
+
             payload = {
-                "documents": matches,
+                "documents": matches_out,
                 "doc_refs": [d["id"] for d in matches],
                 "doc_ref": first_match["id"],
+                "doc_id": first_match["id"],
                 "answer": first_match["content"],
                 "content": first_match["content"],
                 "title": first_match["title"],
                 "facts": {
-                    "documents": matches,
+                    "documents": matches_out,
                     "answer": first_match["content"],
                     "content": first_match["content"],
                     "title": first_match["title"],
@@ -251,6 +277,7 @@ async def handle_mcp(
                 "document": doc,
                 "documents": [doc],
                 "doc_ref": doc["id"],
+                "doc_id": doc["id"],
                 "title": doc["title"],
                 "content": doc["content"],
                 "answer": doc["content"],
