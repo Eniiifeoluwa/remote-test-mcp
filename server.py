@@ -11,9 +11,27 @@ EXPECTED_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "secret_token_abc")
 CRM_CONTACTS: dict[str, dict[str, Any]] = {
     "user_a1b2": {"id": "user_a1b2", "email": "test@example.com", "name": "Test User"},
 }
+CRM_NOTES: list[dict[str, Any]] = []
+
 KB_DOCS: list[dict[str, Any]] = [
-    {"id": "doc_101", "title": "Studio Hours", "content": "Open Tue-Sat from 10 AM to 8 PM."},
-    {"id": "doc_102", "title": "Deposit Policy", "content": "A 20% deposit is required for all appointments."},
+    {
+        "id": "doc_101",
+        "doc_ref": "doc_101",
+        "title": "Studio Hours",
+        "content": "Open Tuesday through Saturday from 10:00 AM to 8:00 PM WAT. Closed Sundays and Mondays.",
+    },
+    {
+        "id": "doc_102",
+        "doc_ref": "doc_102",
+        "title": "Deposit Policy",
+        "content": "A 20% deposit is required for all appointments to secure your slot. Deposits are applied toward the final price.",
+    },
+    {
+        "id": "doc_103",
+        "doc_ref": "doc_103",
+        "title": "Piercing Aftercare",
+        "content": "Clean with sterile saline spray 2-3 times daily. Do not twist jewelry and avoid sleeping on unhealed piercings.",
+    },
 ]
 
 
@@ -82,6 +100,18 @@ async def handle_mcp(
                         },
                     },
                     {
+                        "name": "crm_note_create",
+                        "description": "Add a note or inquiry to a CRM contact record",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "attendee_ref": {"type": "string"},
+                                "note": {"type": "string"},
+                            },
+                            "required": ["note"],
+                        },
+                    },
+                    {
                         "name": "kb_search",
                         "description": "Search internal knowledge base documents",
                         "inputSchema": {
@@ -90,6 +120,17 @@ async def handle_mcp(
                                 "query": {"type": "string"},
                             },
                             "required": ["query"],
+                        },
+                    },
+                    {
+                        "name": "kb_document_get",
+                        "description": "Fetch complete knowledge base document content by doc_ref / id",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "doc_ref": {"type": "string"},
+                                "id": {"type": "string"},
+                            },
                         },
                     },
                 ]
@@ -103,7 +144,7 @@ async def handle_mcp(
 
         if tool_name == "crm_contact_search":
             email = arguments.get("email")
-            match = next((c for c in CRM_CONTACTS.values() if c["email"] == email), None)
+            match = next((c for c in CRM_CONTACTS.values() if c.get("email") == email), None)
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
@@ -121,13 +162,48 @@ async def handle_mcp(
                 "result": {"contact_id": cid, "status": "upserted"},
             }
 
-        if tool_name == "kb_search":
-            query = arguments.get("query", "").lower()
-            matches = [d for d in KB_DOCS if query in d["title"].lower() or query in d["content"].lower()]
+        if tool_name == "crm_note_create":
+            attendee_ref = arguments.get("attendee_ref")
+            note_content = arguments.get("note", "")
+            note_record = {
+                "note_id": f"note_{len(CRM_NOTES) + 1}",
+                "attendee_ref": attendee_ref,
+                "note": note_content,
+            }
+            CRM_NOTES.append(note_record)
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": {"documents": matches},
+                "result": {"note_id": note_record["note_id"], "status": "created"},
+            }
+
+        if tool_name == "kb_search":
+            query = (arguments.get("query") or "").lower()
+            matches = [
+                d
+                for d in KB_DOCS
+                if query in d.get("title", "").lower() or query in d.get("content", "").lower()
+            ]
+            # Return doc references so the saga step can pass them to kb.document.get
+            return {
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": {
+                    "documents": matches,
+                    "doc_refs": [d["id"] for d in matches],
+                },
+            }
+
+        if tool_name == "kb_document_get":
+            target_ref = arguments.get("doc_ref") or arguments.get("id")
+            doc = next(
+                (d for d in KB_DOCS if d.get("id") == target_ref or d.get("doc_ref") == target_ref),
+                None,
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": doc or {"doc_ref": target_ref, "content": ""},
             }
 
         return {
