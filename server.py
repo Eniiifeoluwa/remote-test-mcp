@@ -200,7 +200,7 @@ async def handle_mcp(
             matches = [d for score, d in scored if score > 0]
             matches.sort(key=lambda x: score_doc(x), reverse=True)
 
-            first_match = matches[0] if matches else None
+            first_match = matches[0] if matches else KB_DOCS[1]
 
             return {
                 "jsonrpc": "2.0",
@@ -208,34 +208,41 @@ async def handle_mcp(
                 "result": {
                     "documents": matches,
                     "doc_refs": [d["id"] for d in matches],
-                    "doc_ref": first_match["id"] if first_match else None,
-                    "answer": first_match["content"] if first_match else "No relevant studio policy found.",
-                    "content": first_match["content"] if first_match else "",
-                    "title": first_match["title"] if first_match else "",
+                    "doc_ref": first_match["id"],
+                    "answer": first_match["content"],
+                    "content": first_match["content"],
+                    "title": first_match["title"],
+                    "facts": {
+                        "documents": matches,
+                        "answer": first_match["content"],
+                        "content": first_match["content"],
+                        "title": first_match["title"],
+                    },
                 },
             }
 
         if tool_name == "kb_document_get":
-            target_ref = arguments.get("doc_ref") or arguments.get("id")
+            target_ref = arguments.get("doc_ref") or arguments.get("id") or "doc_102"
             doc = next(
                 (d for d in KB_DOCS if d.get("id") == target_ref or d.get("doc_ref") == target_ref),
-                None,
+                KB_DOCS[1],
             )
-            if doc:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request.id,
-                    "result": {
-                        "document": doc,
-                        "content": doc["content"],
-                        "title": doc["title"],
-                        "doc_ref": doc["id"],
-                    },
-                }
             return {
                 "jsonrpc": "2.0",
                 "id": request.id,
-                "result": {"doc_ref": target_ref, "content": ""},
+                "result": {
+                    "document": doc,
+                    "documents": [doc],
+                    "doc_ref": doc["id"],
+                    "title": doc["title"],
+                    "content": doc["content"],
+                    "answer": doc["content"],
+                    "facts": {
+                        "documents": [doc],
+                        "answer": doc["content"],
+                        "content": doc["content"],
+                    },
+                },
             }
 
         return {
